@@ -6,7 +6,7 @@
 /* Bump this string with every change that gets shipped, so the Setup screen always
    shows which build is actually running — the fastest way to tell whether an update
    to app.js actually reached this device (vs. still loading a cached/old copy). */
-const APP_VERSION = 'v7 · 2026-09-20';
+const APP_VERSION = 'v8 · 2026-09-20';
 
 /* ---------- Storage (unchanged) ---------- */
 const STORE_KEY = 'dialin_v1';
@@ -536,6 +536,19 @@ function wireLongPress(){
    count. The corrected count then reproduces the same measurement on the next pass
    (row/viewport heights don't depend on how many rows are showing), so this settles
    after a single extra render rather than looping. */
+// Real-device root cause of the History page overflowing past the tab bar: this runs on
+// the very first paint, before the Barlow webfont (loaded from Google Fonts over the
+// network) has actually arrived. That first measurement is taken against the fallback
+// system font, which is narrower/shorter than Barlow, so it under-measures row height and
+// decides one row more fits than actually will once the real font swaps in and the rows
+// grow — a reflow this function never got a chance to re-check. Quick local testing didn't
+// catch it because the sandboxed browser had already cached the font by the time it
+// measured. Fixed two ways: a small safety buffer on the fit calculation so an off-by-a-
+// hair rounding doesn't tip it over, and a re-measure once the browser confirms the
+// webfont has actually finished loading (document.fonts.ready), which corrects the count
+// if the font swap changed row heights after the fact.
+const HISTORY_FIT_SAFETY_PX = 6;
+let historyFontsHooked = false;
 function adjustHistoryPageSize(){
   const viewport = document.getElementById('history-list-viewport');
   if(!viewport) return;
@@ -549,10 +562,26 @@ function adjustHistoryPageSize(){
   let rowH = 0;
   rows.forEach(r => { rowH = Math.max(rowH, r.getBoundingClientRect().height); });
   if(!rowH) return;
-  const fit = Math.max(1, Math.floor(viewport.clientHeight / rowH));
+  // Beyond the pixel buffer above, also always hold back one full row of headroom. The
+  // measurement is fundamentally a snapshot of a moment (device font metrics, Dynamic
+  // Type size, rounding) that can drift slightly on a real phone in ways this can't
+  // simulate — one spare row's worth of slack is a cheap, robust guarantee that the page
+  // never runs long, at the cost of the list ending one entry sooner than the theoretical
+  // max.
+  const fit = Math.max(1, Math.floor((viewport.clientHeight - HISTORY_FIT_SAFETY_PX) / rowH) - 1);
   if(fit !== UIState.historyPageSize){
     UIState.historyPageSize = fit;
     render();
+  }
+  if(!historyFontsHooked && document.fonts && document.fonts.ready){
+    // Fires once per page load, the first time History is measured. Deliberately never
+    // re-arms itself (an earlier version reset the flag inside this same callback before
+    // re-measuring, which re-subscribed to a promise that was already settled — since a
+    // settled promise's .then() fires on the very next microtask, that re-armed immediately,
+    // which re-armed again immediately, forever, freezing the page). One correction after
+    // fonts finish loading is all this needs.
+    historyFontsHooked = true;
+    document.fonts.ready.then(()=>{ adjustHistoryPageSize(); });
   }
 }
 function wireAll(){
