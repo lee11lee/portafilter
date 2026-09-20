@@ -146,7 +146,8 @@ let Registry = { validators:{}, dragFields:{} };
 /* Ephemeral view-state that isn't part of the data model (sort/filter/segment
    selection). Base tab-level screens get fresh params on every render, so this
    lives outside Nav/params instead. */
-let UIState = { shelfSeg:'Active', historySort:'Recent', historyFilter:'All' };
+let UIState = { shelfSeg:'Active', historySort:'Recent', historyFilter:'All', historyPage:1 };
+const HISTORY_PAGE_SIZE = 15;
 
 /* Buttons whose enabled state depends on live text-field values register a check here. */
 function regValidate(btnId, checkFn){ Registry.validators[btnId] = checkFn; }
@@ -186,6 +187,20 @@ function toast(msg){ Nav.toast = msg; }
 
 /* ===================== Render engine ===================== */
 function render(){
+  try{
+    renderInner();
+  }catch(err){
+    // A broken modal/confirm left in Nav would otherwise throw again on every future
+    // render (since this same function re-renders it each time), which locks up every
+    // action in the app — not just the one that failed — until a full page reload
+    // resets Nav from scratch. Clearing the stuck state here means one bad screen can't
+    // take the rest of the app down with it.
+    console.error('render() failed, resetting modal/confirm state:', err);
+    Nav.modal = null; Nav.confirm = null;
+    try{ renderInner(); }catch(err2){ console.error('render() failed again:', err2); }
+  }
+}
+function renderInner(){
   Registry = { validators:{}, dragFields:{} };
   const app = document.getElementById('app');
   let html;
@@ -263,11 +278,12 @@ function TabBar(){
 
 function chevronLeft(){ return '‹'; }
 /* Pushed-detail-screen header: back chevron, title, right-aligned meta. */
-function detailHeader(title, meta, onBack){
+function detailHeader(title, meta, onBack, saveAction){
   return `<div class="header-row">
     <button class="link-back" onclick="${onBack||'A.pop()'}">${chevronLeft()}</button>
     <span class="htitle bc">${escapeHtml(title)}</span>
-    ${meta?`<span class="hmeta">${escapeHtml(meta)}</span>`:''}
+    ${saveAction ? `<button class="bsc" style="margin-left:auto;color:var(--accent);font-weight:600;font-size:13px;letter-spacing:.08em;text-transform:uppercase;" onclick="${saveAction}">Save</button>`
+      : (meta?`<span class="hmeta">${escapeHtml(meta)}</span>`:'')}
   </div>`;
 }
 /* Modal header per behaviour note 11: Cancel (dim) — centred title — Save (accent),
@@ -430,6 +446,13 @@ function wireDragFields(){
         st.live = true;
         try{ el.setPointerCapture(st.pid); }catch(err){}
       }
+      // Once the drag is committed to horizontal, the finger's vertical position is
+      // used on purpose (moving down fine-tunes sensitivity via "gear") — so the page's
+      // own vertical scroll must be locked out for the rest of this gesture, or the
+      // screen scrolls underneath the same motion and the drag feels like it's fighting
+      // the page. touch-action:pan-y still lets a genuinely vertical gesture scroll
+      // (handled above, before .live), so only the committed drag gets this treatment.
+      e.preventDefault();
       const dy = Math.max(0, e.clientY - st.y0);
       st.gear = 1/(1+dy/22);
       const span = (cfg.max-cfg.min)/st.width;
@@ -437,7 +460,7 @@ function wireDragFields(){
       const snapped = Math.max(cfg.min, Math.min(cfg.max, Number((Math.round(raw/cfg.step)*cfg.step).toFixed(3))));
       if(snapped !== cfg.get()){ cfg.set(snapped); patchDragField(key,cfg,st.gear); vibrate(4); }
       else { patchDragField(key,cfg,st.gear); }
-    });
+    }, {passive:false});
     function finish(e){
       const st = DragGesture[key]; if(!st) return;
       if(!st.live && Math.abs(e.clientY-st.y0)<8){
@@ -590,8 +613,12 @@ function BeanDialCard(bean){
     </div>
   </div>`;
 }
-function photoThumb(photoData, w, h){
-  return `<div class="beanphoto" style="width:${w}px;height:${h}px;">${photoData?`<img src="${photoData}">`:''}</div>`;
+function photoThumb(photoData, w, h, onClick){
+  const clickable = !!onClick;
+  return `<div class="beanphoto" style="width:${w}px;height:${h}px;${clickable?'cursor:pointer;':''}" ${clickable?`onclick="${onClick}"`:''}>${
+    photoData ? `<img src="${photoData}">`
+    : (clickable ? `<span class="bsc" style="font-size:9.5px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-faint);padding:2px;">+ Photo</span>` : '')
+  }</div>`;
 }
 
 /* ===================== Screen: Log Shot (9T / 9U) ===================== */
@@ -765,6 +792,23 @@ function DrinkRatingRow(type, draft){
     <div class="pip-row">${pips}</div>
   </div>`;
 }
+function pagerRow(current, totalPages){
+  if(totalPages<=1) return '';
+  const nums = [];
+  const add=(n)=>{ if(n>=1 && n<=totalPages && !nums.includes(n)) nums.push(n); };
+  add(1); add(totalPages);
+  for(let i=current-1;i<=current+1;i++) add(i);
+  nums.sort((a,b)=>a-b);
+  let inner = `<button class="pager-btn" ${current<=1?'disabled':''} onclick="A.setHistoryPage(${current-1})">‹</button>`;
+  let prev = 0;
+  nums.forEach(n=>{
+    if(prev && n-prev>1) inner += `<span class="pager-ellipsis">…</span>`;
+    inner += `<button class="pager-btn ${n===current?'on':''}" onclick="A.setHistoryPage(${n})">${n}</button>`;
+    prev = n;
+  });
+  inner += `<button class="pager-btn" ${current>=totalPages?'disabled':''} onclick="A.setHistoryPage(${current+1})">›</button>`;
+  return `<div class="pager-row">${inner}</div>`;
+}
 function HistoryShotRow(shot){
   const pips = DRINK_TYPES.map(t=>{
     const r = shot.ratings.find(x=>x.drinkType===t.id && x.stars>0);
@@ -832,7 +876,10 @@ function BagDetailScreen(params){
   return `
     ${detailHeader(bean.name, escapeHtml(bean.roaster)+' · day '+days)}
     <div style="display:flex;gap:12px;margin-top:14px;align-items:flex-start;">
-      ${photoThumb(bean.photoData, 64, 84)}
+      <div>
+        ${photoThumb(bean.photoData, 64, 84, `A.pickPhotoForBean('${bean.id}')`)}
+        <button class="bsc" style="color:var(--accent);font-size:9.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;margin-top:5px;display:block;width:64px;text-align:center;" onclick="A.takePhotoForBean('${bean.id}')">${bean.photoData?'Retake':'Camera'}</button>
+      </div>
       <div style="flex:1;">
         <div class="bsc" style="font-weight:600;font-size:10.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-dim);">${[bean.origin,bean.roastLevel,bean.process].filter(Boolean).join(' · ')}</div>
         <div style="font-size:13.5px;color:var(--ink-dim);margin-top:4px;line-height:1.45;">Roasted ${fmtRoastDate(bean.roastDate)}.${bean.notes?' '+escapeHtml(bean.notes):''}${bean.price?` · ${escapeHtml(bean.price)}`:''}</div>
@@ -978,8 +1025,16 @@ function ShotHistoryScreen(params){
   }
   const sortOpts = ['Recent','Rating','Ratio'];
   const filterOpts = [{id:'All',label:'All'},{id:'espresso',label:'Espresso'},{id:'cortado',label:'Cortado'},{id:'cappuccino',label:'Cappuccino'}];
+  const totalPages = Math.max(1, Math.ceil(shots.length / HISTORY_PAGE_SIZE));
+  if(UIState.historyPage > totalPages) UIState.historyPage = totalPages;
+  if(UIState.historyPage < 1) UIState.historyPage = 1;
+  const page = UIState.historyPage;
+  const pageShots = shots.slice((page-1)*HISTORY_PAGE_SIZE, page*HISTORY_PAGE_SIZE);
   return `
     ${bean?detailHeader(bean.name,'','A.pop()'):screenHeader('History', shots.length+' shot'+(shots.length===1?'':'s'))}
+    ${!bean ? `<div style="display:flex;justify-content:flex-end;margin-top:8px;">
+      <button class="bsc" style="color:var(--accent);font-weight:600;font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;" onclick="A.switchTab(0)">‹ Back to Dial in</button>
+    </div>` : ''}
     <div class="pill-row" style="margin-top:12px;">
       <span class="plabel">Sort</span>
       ${sortOpts.map(s=>`<button class="pill ${UIState.historySort===s?'on':''}" onclick="A.setHistorySort('${s}')">${s}</button>`).join('')}
@@ -990,9 +1045,11 @@ function ShotHistoryScreen(params){
         ${filterOpts.map(f=>`<button class="pill scroll ${UIState.historyFilter===f.id?'on':''}" onclick="A.setHistoryFilter('${f.id}')">${f.label}</button>`).join('')}
       </div>
     </div>
+    ${totalPages>1 ? pagerRow(page, totalPages) : ''}
     <div style="margin-top:14px;border-top:1px solid var(--hair);">
-      ${shots.length===0 ? `<div class="empty-msg">No shots match. Pull one from the Dial tab.</div>` : shots.map(s=>HistoryShotRow(s)).join('')}
+      ${shots.length===0 ? `<div class="empty-msg">No shots match. Pull one from the Dial tab.</div>` : pageShots.map(s=>HistoryShotRow(s)).join('')}
     </div>
+    ${totalPages>1 ? pagerRow(page, totalPages) : ''}
   `;
 }
 
@@ -1091,7 +1148,7 @@ function GrinderDetailScreen(params){
   const burrOpts = ['Conical','Flat'];
   const burr = g.burr || 'Conical';
   return `
-    ${detailHeader(g.name, g.isActive?'Active':'', 'A.pop()')}
+    ${detailHeader(g.name, g.isActive?'Active':'', 'A.pop()', `A.saveGrinderAndBack('${g.id}')`)}
     <span class="section-label">Identity</span>
     <div class="row-list">
       <div class="row-item"><span class="rlabel">Name</span><input type="text" value="${escapeHtml(g.name)}" style="text-align:right;color:var(--accent);" oninput="A.setGrinderField('${g.id}','name',this.value)"></div>
@@ -1126,7 +1183,7 @@ function MachineDetailScreen(params){
   const recipeIds = m.recipeIds || [];
   const recipes = [...DB.recipes].sort((a,b)=>b.createdAt-a.createdAt);
   return `
-    ${detailHeader(m.name, m.isActive?'Active':'', 'A.pop()')}
+    ${detailHeader(m.name, m.isActive?'Active':'', 'A.pop()', `A.saveMachineAndBack('${m.id}')`)}
     <span class="section-label">Identity</span>
     <div class="row-list">
       <div class="row-item"><span class="rlabel">Name</span><input type="text" value="${escapeHtml(m.name)}" style="text-align:right;color:var(--accent);" oninput="A.setMachineField('${m.id}','name',this.value)"></div>
@@ -1224,6 +1281,7 @@ const A = {
   takePhoto(){ requestPhoto(true, durl=>{ const p=activeParams(); p.draft.photoData=durl; render(); }); },
   clearDraftPhoto(){ const p=activeParams(); p.draft.photoData=null; render(); },
   pickPhotoForBean(beanId){ requestPhoto(false, durl=>{ const b=findBean(beanId); b.photoData=durl; save(); render(); }); },
+  takePhotoForBean(beanId){ requestPhoto(true, durl=>{ const b=findBean(beanId); b.photoData=durl; save(); render(); }); },
   saveBean(){
     const p = activeParams(); const d = p.draft;
     if(!d.name.trim()) return;
@@ -1359,8 +1417,9 @@ const A = {
   },
 
   setShelfSeg(seg){ UIState.shelfSeg = seg; render(); },
-  setHistorySort(s){ UIState.historySort = s; render(); },
-  setHistoryFilter(f){ UIState.historyFilter = f; render(); },
+  setHistorySort(s){ UIState.historySort = s; UIState.historyPage = 1; render(); },
+  setHistoryFilter(f){ UIState.historyFilter = f; UIState.historyPage = 1; render(); },
+  setHistoryPage(p){ UIState.historyPage = p; render(); },
 
   openEditRecipe(recipeId){ pushStack('edit-recipe', {recipeId}); },
   openAddRecipe(){ openModal('add-recipe', {draft:{name:'',notes:'',pressure:9,temperature:93,preInfusion:6,basket:18}}); },
@@ -1397,6 +1456,7 @@ const A = {
   toggleGrinderDial(id){ const g=findGrinder(id); if(g){ g.useDialForGrind=!g.useDialForGrind; save(); render(); } },
   setActiveGrinder(id){ DB.grinders.forEach(g=>{ g.isActive = (g.id===id); }); save(); render(); },
   deleteGrinderConfirm(id){ confirmDialog('Delete this grinder?','','Delete',true, ()=>{ DB.grinders=DB.grinders.filter(g=>g.id!==id); save(); popStack(); }); },
+  saveGrinderAndBack(id){ save(); toast('Grinder saved'); popStack(); },
   setMachineField(id,field,val){ const m=findMachine(id); if(m){ m[field]=val; save(); } },
   setMachineChip(id,field,val){ const m=findMachine(id); if(m){ m[field]=val; save(); render(); } },
   toggleMachineGauge(id){ const m=findMachine(id); if(m){ m.hasPressureGauge=!m.hasPressureGauge; save(); render(); } },
@@ -1416,6 +1476,7 @@ const A = {
   },
   openAddRecipeForMachine(machineId){ openModal('add-recipe', {draft:{name:'',notes:'',pressure:9,temperature:93,preInfusion:6,basket:18}, forMachineId:machineId}); },
   deleteMachineConfirm(id){ confirmDialog('Delete this machine?','','Delete',true, ()=>{ DB.machines=DB.machines.filter(m=>m.id!==id); save(); popStack(); }); },
+  saveMachineAndBack(id){ save(); toast('Machine saved'); popStack(); },
   saveNewMachine(){ const d=activeParams().draft; if(!d.name.trim()) return; DB.machines.push({id:uid(),name:d.name.trim(),brand:d.brand.trim(),hasPressureGauge:false,type:d.type||'Pump',basket:18,defaultPressure:9,defaultTemperature:93,recipeIds:[],createdAt:Date.now()}); save(); Nav.modal=null; render(); },
   saveNewGrinder(){ const d=activeParams().draft; if(!d.name.trim()) return; const makeActive = DB.grinders.length===0;
     DB.grinders.push({id:uid(),name:d.name.trim(),brand:d.brand.trim(),scaleDescription:'Stepped',useDialForGrind:true,grindDialMin:0,grindDialMax:10,grindDialStep:0.1,burr:d.burr||'Conical',isActive:makeActive,createdAt:Date.now()});
@@ -1466,11 +1527,20 @@ function initStaticInputs(){
 }
 function performImport(bundle){
   try{
-    DB = {
+    const mapTags = arr => (arr||[]).map(n => typeof n==='string' ? {id:uid(),name:n,createdAt:Date.now()} : n);
+    // Merged onto defaultDB() (same as loadDB() does on every normal page load) so any
+    // field the imported bundle doesn't carry — including ones added after that backup
+    // was made — still exists as a valid empty value instead of being left undefined.
+    // A missing field here (this was customProcessTags) throws the first time a screen
+    // reads it, which aborts render() mid-way and leaves Nav.modal pointing at a modal
+    // that will throw again on every future render — so nothing else can open either,
+    // including "Add bag" and "Erase all data" — until a reload rebuilds Nav from scratch.
+    DB = Object.assign(defaultDB(), {
       beans: bundle.beans||[], shots: bundle.shots||[], recipes: bundle.recipes||[],
       machines: bundle.machines||[], grinders: bundle.grinders||[],
-      customFlavorTags: (bundle.customFlavorTags||[]).map(n => typeof n==='string' ? {id:uid(),name:n,createdAt:Date.now()} : n)
-    };
+      customFlavorTags: mapTags(bundle.customFlavorTags),
+      customProcessTags: mapTags(bundle.customProcessTags)
+    });
     save();
     Nav = {tab:0, stacks:[[],[],[],[],[]], modal:null, confirm:null, toast:null};
     toast('Backup restored');
