@@ -16,7 +16,12 @@ html,body{margin:0;padding:0;background:var(--ground);color:var(--ink);
 body{-webkit-user-select:none;user-select:none;}
 input,textarea{-webkit-user-select:text;user-select:text;}
 #app{min-height:100vh; display:flex; flex-direction:column;}
-.screen{flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; padding:calc(16px + env(safe-area-inset-top)) 16px 0; display:flex; flex-direction:column;}
+/* min-height:0 overrides the flexbox default of a flex item never shrinking below its
+   own content's natural size. Without it, a screen with a lot of content (like History,
+   which is deliberately capped to one screen with no internal scrollbar) would instead
+   just grow #app taller than the actual device viewport — pushing the tab bar and any
+   bottom controls below the visible screen instead of clipping the overflow in place. */
+.screen{flex:1; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch; padding:calc(16px + env(safe-area-inset-top)) 16px 0; display:flex; flex-direction:column;}
 .screen.no-scroll{overflow:hidden;}
 .screen-body{flex:1 1 auto;}
 .uc{text-transform:uppercase;}
