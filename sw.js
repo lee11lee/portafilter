@@ -1,4 +1,4 @@
-const CACHE = 'portafilter-v3';
+const CACHE = 'portafilter-v4';
 // app.js and style.css are deliberately left out here: index.html requests them with a
 // cache-busting ?v= query string that changes every release, so precaching the bare
 // (unversioned) path would just create an entry that's never actually matched — the

@@ -6,7 +6,7 @@
 /* Bump this string with every change that gets shipped, so the Setup screen always
    shows which build is actually running — the fastest way to tell whether an update
    to app.js actually reached this device (vs. still loading a cached/old copy). */
-const APP_VERSION = 'v6 · 2026-09-20';
+const APP_VERSION = 'v7 · 2026-09-20';
 
 /* ---------- Storage (unchanged) ---------- */
 const STORE_KEY = 'dialin_v1';
