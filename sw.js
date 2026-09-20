@@ -1,5 +1,9 @@
-const CACHE = 'portafilter-v2';
-const ASSETS = ['./', './index.html', './app.js', './style.css', './manifest.json', './icon-192.png', './icon-512.png'];
+const CACHE = 'portafilter-v3';
+// app.js and style.css are deliberately left out here: index.html requests them with a
+// cache-busting ?v= query string that changes every release, so precaching the bare
+// (unversioned) path would just create an entry that's never actually matched — the
+// fetch handler below caches them under their real, versioned URL as they're used.
+const ASSETS = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(()=>self.skipWaiting()));
@@ -21,7 +25,7 @@ self.addEventListener('fetch', e => {
   if(e.request.method !== 'GET') return;
   if(!e.request.url.startsWith(self.location.origin)) return;
   e.respondWith(
-    fetch(e.request).then(networkResp => {
+    fetch(e.request, {cache:'reload'}).then(networkResp => {
       if(networkResp && networkResp.status === 200){
         const clone = networkResp.clone();
         caches.open(CACHE).then(c => c.put(e.request, clone));

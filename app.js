@@ -6,7 +6,7 @@
 /* Bump this string with every change that gets shipped, so the Setup screen always
    shows which build is actually running — the fastest way to tell whether an update
    to app.js actually reached this device (vs. still loading a cached/old copy). */
-const APP_VERSION = 'v1.4 · 2026-09-20e';
+const APP_VERSION = 'v6 · 2026-09-20';
 
 /* ---------- Storage (unchanged) ---------- */
 const STORE_KEY = 'dialin_v1';
@@ -1182,6 +1182,11 @@ function SettingsScreen(){
       <button class="settings-row" onclick="A.eraseAllConfirm()"><div class="stitle danger" style="flex:1;">Erase all data</div></button>
     </div>
     <div style="padding:16px 0 0;font-size:12.5px;color:var(--ink-faint);line-height:1.5;">Everything lives on this device. Export before clearing browser data.</div>
+    <span class="section-label">App</span>
+    <div class="row-list">
+      <button class="settings-row" onclick="A.forceRefreshApp()"><div class="stitle" style="flex:1;">Force refresh from GitHub</div></button>
+    </div>
+    <div style="padding:8px 0 0;font-size:12.5px;color:var(--ink-faint);line-height:1.5;">If the version above doesn't match what you just uploaded, use this — it clears everything this app has cached about itself (never your bags or shots) and reloads straight from GitHub.</div>
   `;
 }
 function GrinderDetailScreen(params){
@@ -1539,6 +1544,21 @@ const A = {
   startImport(){ const inp=document.getElementById('fileInputImport'); inp.value=''; inp.click(); },
   eraseAllConfirm(){ confirmDialog('Erase all data?','Every bag, shot and recipe on this device. Export a backup first if you want it back.','Erase',true, ()=>{
     DB = defaultDB(); save(); Nav = {tab:0, stacks:[[],[],[],[],[]], modal:null, confirm:null, toast:null}; render();
+  }); },
+  forceRefreshApp(){ confirmDialog('Force refresh?','Clears everything this app has cached about its own code (not your bags or shots) and reloads fresh from GitHub.','Refresh',false, async ()=>{
+    try{
+      if('serviceWorker' in navigator){
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map(r=>r.unregister()));
+      }
+      if('caches' in window){
+        const keys = await caches.keys();
+        await Promise.all(keys.map(k=>caches.delete(k)));
+      }
+    }catch(err){ console.error('force refresh cleanup failed:', err); }
+    // Bust any lingering HTTP-level cache on the reload itself too, on top of clearing
+    // the service worker and its Cache Storage above.
+    location.href = location.pathname + '?refreshed=' + Date.now();
   }); },
 };
 window.A = A;

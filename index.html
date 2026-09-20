@@ -14,13 +14,18 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@400;500;600;700&family=Barlow+Semi+Condensed:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css">
+<!-- The ?v= query string on these two is a cache-buster: bumped on every release so the
+     URL itself changes and any cache along the way (this browser's HTTP cache, GitHub
+     Pages' own CDN, an old service worker) sees a request it's never seen before and has
+     no choice but to fetch fresh, instead of relying on any of those caches correctly
+     noticing the underlying file changed. -->
+<link rel="stylesheet" href="style.css?v=6">
 </head>
 <body>
 <div id="app"></div>
 <input type="file" id="fileInputPhoto" accept="image/*" style="display:none">
 <input type="file" id="fileInputCamera" accept="image/*" capture="environment" style="display:none">
 <input type="file" id="fileInputImport" accept="application/json" style="display:none">
-<script src="app.js"></script>
+<script src="app.js?v=6"></script>
 </body>
 </html>
