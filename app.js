@@ -3,6 +3,11 @@
    black/cream/burnt-orange design system in handoff/HANDOFF.md + DialIn Screens.dc.html.
    ==================================================================== */
 
+/* Bump this string with every change that gets shipped, so the Setup screen always
+   shows which build is actually running — the fastest way to tell whether an update
+   to app.js actually reached this device (vs. still loading a cached/old copy). */
+const APP_VERSION = 'v1.2 · 2026-09-20c';
+
 /* ---------- Storage (unchanged) ---------- */
 const STORE_KEY = 'dialin_v1';
 function uid(){ return 'id_' + Date.now().toString(36) + Math.random().toString(36).slice(2,9); }
@@ -146,8 +151,7 @@ let Registry = { validators:{}, dragFields:{} };
 /* Ephemeral view-state that isn't part of the data model (sort/filter/segment
    selection). Base tab-level screens get fresh params on every render, so this
    lives outside Nav/params instead. */
-let UIState = { shelfSeg:'Active', historySort:'Recent', historyFilter:'All', historyPage:1 };
-const HISTORY_PAGE_SIZE = 15;
+let UIState = { shelfSeg:'Active', historySort:'Recent', historyFilter:'All', historyPage:1, historyPageSize:8 };
 
 /* Buttons whose enabled state depends on live text-field values register a check here. */
 function regValidate(btnId, checkFn){ Registry.validators[btnId] = checkFn; }
@@ -209,7 +213,8 @@ function renderInner(){
   } else {
     const top = currentTop();
     const isBase = Nav.stacks[Nav.tab].length===0;
-    html = `<div class="screen">${renderScreen(top.screen, top.params)}</div>` + (isBase ? TabBar() : '');
+    const noScroll = top.screen==='shot-history';
+    html = `<div class="screen${noScroll?' no-scroll':''}">${renderScreen(top.screen, top.params)}</div>` + (isBase ? TabBar() : '');
   }
   app.innerHTML = html;
   if(Nav.modal){ app.insertAdjacentHTML('beforeend', renderModal()); }
@@ -504,10 +509,33 @@ function wireLongPress(){
   });
 }
 
+/* History is meant to never scroll — it should show exactly as many shots as fit the
+   device's screen and use Previous/Next to move between pages instead. The available
+   height depends on the actual screen (and whatever header/back-button/filter rows are
+   above it that day), so it's measured after paint rather than guessed: take the already-
+   rendered list viewport's real height, divide by one row's real height, and if that
+   doesn't match how many rows this render assumed, re-render once with the corrected
+   count. The corrected count then reproduces the same measurement on the next pass
+   (row/viewport heights don't depend on how many rows are showing), so this settles
+   after a single extra render rather than looping. */
+function adjustHistoryPageSize(){
+  const viewport = document.getElementById('history-list-viewport');
+  if(!viewport) return;
+  const rows = viewport.querySelectorAll('.hist-row');
+  if(rows.length===0) return;
+  const rowH = rows[0].getBoundingClientRect().height;
+  if(!rowH) return;
+  const fit = Math.max(1, Math.floor(viewport.clientHeight / rowH));
+  if(fit !== UIState.historyPageSize){
+    UIState.historyPageSize = fit;
+    render();
+  }
+}
 function wireAll(){
   wireDragFields();
   wireLongPress();
   document.querySelectorAll('textarea[data-autosize]').forEach(t=>{ t.style.height='auto'; t.style.height=t.scrollHeight+'px'; });
+  adjustHistoryPageSize();
 }
 
 /* ===================== Screens: Onboarding ===================== */
@@ -792,23 +820,6 @@ function DrinkRatingRow(type, draft){
     <div class="pip-row">${pips}</div>
   </div>`;
 }
-function pagerRow(current, totalPages){
-  if(totalPages<=1) return '';
-  const nums = [];
-  const add=(n)=>{ if(n>=1 && n<=totalPages && !nums.includes(n)) nums.push(n); };
-  add(1); add(totalPages);
-  for(let i=current-1;i<=current+1;i++) add(i);
-  nums.sort((a,b)=>a-b);
-  let inner = `<button class="pager-btn" ${current<=1?'disabled':''} onclick="A.setHistoryPage(${current-1})">‹</button>`;
-  let prev = 0;
-  nums.forEach(n=>{
-    if(prev && n-prev>1) inner += `<span class="pager-ellipsis">…</span>`;
-    inner += `<button class="pager-btn ${n===current?'on':''}" onclick="A.setHistoryPage(${n})">${n}</button>`;
-    prev = n;
-  });
-  inner += `<button class="pager-btn" ${current>=totalPages?'disabled':''} onclick="A.setHistoryPage(${current+1})">›</button>`;
-  return `<div class="pager-row">${inner}</div>`;
-}
 function HistoryShotRow(shot){
   const pips = DRINK_TYPES.map(t=>{
     const r = shot.ratings.find(x=>x.drinkType===t.id && x.stars>0);
@@ -1025,11 +1036,15 @@ function ShotHistoryScreen(params){
   }
   const sortOpts = ['Recent','Rating','Ratio'];
   const filterOpts = [{id:'All',label:'All'},{id:'espresso',label:'Espresso'},{id:'cortado',label:'Cortado'},{id:'cappuccino',label:'Cappuccino'}];
-  const totalPages = Math.max(1, Math.ceil(shots.length / HISTORY_PAGE_SIZE));
+  // historyPageSize is measured against the actual device screen (see adjustHistoryPageSize
+  // in wireAll) so the list always fills exactly one screen's worth of rows and never needs
+  // its own scrollbar — Previous/Next below just move between screens of results instead.
+  const pageSize = UIState.historyPageSize || 8;
+  const totalPages = Math.max(1, Math.ceil(shots.length / pageSize));
   if(UIState.historyPage > totalPages) UIState.historyPage = totalPages;
   if(UIState.historyPage < 1) UIState.historyPage = 1;
   const page = UIState.historyPage;
-  const pageShots = shots.slice((page-1)*HISTORY_PAGE_SIZE, page*HISTORY_PAGE_SIZE);
+  const pageShots = shots.slice((page-1)*pageSize, page*pageSize);
   return `
     ${bean?detailHeader(bean.name,'','A.pop()'):screenHeader('History', shots.length+' shot'+(shots.length===1?'':'s'))}
     ${!bean ? `<div style="display:flex;justify-content:flex-end;margin-top:8px;">
@@ -1045,11 +1060,14 @@ function ShotHistoryScreen(params){
         ${filterOpts.map(f=>`<button class="pill scroll ${UIState.historyFilter===f.id?'on':''}" onclick="A.setHistoryFilter('${f.id}')">${f.label}</button>`).join('')}
       </div>
     </div>
-    ${totalPages>1 ? pagerRow(page, totalPages) : ''}
-    <div style="margin-top:14px;border-top:1px solid var(--hair);">
+    <div class="history-list-viewport" id="history-list-viewport" style="margin-top:14px;border-top:1px solid var(--hair);">
       ${shots.length===0 ? `<div class="empty-msg">No shots match. Pull one from the Dial tab.</div>` : pageShots.map(s=>HistoryShotRow(s)).join('')}
     </div>
-    ${totalPages>1 ? pagerRow(page, totalPages) : ''}
+    ${totalPages>1 ? `<div class="pager-bottom">
+      <button class="btn-ghost pager-nav" ${page<=1?'disabled':''} onclick="A.setHistoryPage(${page-1})">‹ Previous</button>
+      <span class="pager-count">${page} / ${totalPages}</span>
+      <button class="btn-ghost pager-nav" ${page>=totalPages?'disabled':''} onclick="A.setHistoryPage(${page+1})">Next ›</button>
+    </div>` : ''}
   `;
 }
 
@@ -1119,7 +1137,7 @@ function AddRecipeModal(params){
 function SettingsScreen(){
   const grinders = [...DB.grinders].sort((a,b)=>a.createdAt-b.createdAt);
   const machines = [...DB.machines].sort((a,b)=>a.createdAt-b.createdAt);
-  return `${screenHeader('Setup','v1.0 · local only')}
+  return `${screenHeader('Setup', APP_VERSION)}
     <span class="section-label">Equipment</span>
     <div class="row-list">
       ${grinders.map(g=>`<button class="settings-row" onclick="A.openGrinderDetail('${g.id}')">
