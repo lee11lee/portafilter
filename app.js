@@ -6,7 +6,7 @@
 /* Bump this string with every change that gets shipped, so the Setup screen always
    shows which build is actually running — the fastest way to tell whether an update
    to app.js actually reached this device (vs. still loading a cached/old copy). */
-const APP_VERSION = 'v1.2 · 2026-09-20c';
+const APP_VERSION = 'v1.4 · 2026-09-20e';
 
 /* ---------- Storage (unchanged) ---------- */
 const STORE_KEY = 'dialin_v1';
@@ -468,9 +468,27 @@ function wireDragFields(){
     }, {passive:false});
     function finish(e){
       const st = DragGesture[key]; if(!st) return;
-      if(!st.live && Math.abs(e.clientY-st.y0)<8){
+      const dx = e.clientX - st.x0, dy = e.clientY - st.y0;
+      if(!st.live && Math.abs(dx)<5 && Math.abs(dy)<8){
+        // A genuine tap: no meaningful movement happened at all (with or without an
+        // intermediate pointermove ever firing), so jump straight to wherever it landed.
         const fr = Math.max(0, Math.min(1, (e.clientX-st.left)/st.width));
         const raw = cfg.min + fr*(cfg.max-cfg.min);
+        const snapped = Math.max(cfg.min, Math.min(cfg.max, Number((Math.round(raw/cfg.step)*cfg.step).toFixed(3))));
+        cfg.set(snapped);
+      } else if(!st.live){
+        // A fast flick can end (pointerup) before the browser ever delivers a single
+        // pointermove — measured directly: a swipe finished in one tick had start and end
+        // events but nothing in between. Without this branch, that gesture fell through
+        // to the tap logic above, which ignores where the drag started (this engine lets
+        // you start dragging anywhere on the control, not just on the handle) and instead
+        // jumps to whatever absolute position the finger physically ended up at — on a
+        // fast swipe that can easily be on the opposite side of the starting value from
+        // where the finger actually moved, which reads as the slider "reversing". Using
+        // the same start-value-anchored relative-motion math as a live drag fixes it,
+        // using the total displacement between down and up as the single "move".
+        const span = (cfg.max-cfg.min)/st.width;
+        const raw = st.v0 + dx*span;
         const snapped = Math.max(cfg.min, Math.min(cfg.max, Number((Math.round(raw/cfg.step)*cfg.step).toFixed(3))));
         cfg.set(snapped);
       }
@@ -523,7 +541,13 @@ function adjustHistoryPageSize(){
   if(!viewport) return;
   const rows = viewport.querySelectorAll('.hist-row');
   if(rows.length===0) return;
-  const rowH = rows[0].getBoundingClientRect().height;
+  // A row with star ratings renders an extra line (the rating pips) and is taller than
+  // one without — measuring only the first row assumed every row was that same height,
+  // so a page that happened to start with an unrated shot but include rated ones further
+  // down would run taller than calculated and spill past the bottom of the screen. Using
+  // the tallest row actually on screen keeps the page a guaranteed fit either way.
+  let rowH = 0;
+  rows.forEach(r => { rowH = Math.max(rowH, r.getBoundingClientRect().height); });
   if(!rowH) return;
   const fit = Math.max(1, Math.floor(viewport.clientHeight / rowH));
   if(fit !== UIState.historyPageSize){
