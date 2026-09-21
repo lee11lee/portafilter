@@ -6,7 +6,7 @@
 /* Bump this string with every change that gets shipped, so the Setup screen always
    shows which build is actually running — the fastest way to tell whether an update
    to app.js actually reached this device (vs. still loading a cached/old copy). */
-const APP_VERSION = 'v8 · 2026-09-20';
+const APP_VERSION = 'v9 · 2026-09-21';
 
 /* ---------- Storage (unchanged) ---------- */
 const STORE_KEY = 'dialin_v1';
@@ -92,7 +92,11 @@ function isToday(iso){ const d=new Date(iso), n=new Date(); return d.toDateStrin
 function isYesterday(iso){ const d=new Date(iso); const y=new Date(); y.setDate(y.getDate()-1); return d.toDateString()===y.toDateString(); }
 function timestampLabel(iso){ if(isToday(iso)) return 'Today'; if(isYesterday(iso)) return 'Yesterday'; return new Date(iso).toLocaleDateString('en-US',{weekday:'short'}); }
 function fmtRoastDate(iso){ const d=new Date(iso+'T00:00:00'); return d.toLocaleDateString('en-US',{day:'numeric',month:'short'}); }
-function vibrate(ms){ try{ if(navigator.vibrate) navigator.vibrate(ms||8);}catch(e){} }
+// Tested directly on-device (iOS 18.7, real Safari and standalone): no haptic feedback
+// path exists here. navigator.vibrate() was never implemented by WebKit, and the
+// checkbox-switch trick some sites describe (creating a hidden <input type="checkbox"
+// switch> and toggling it) produced nothing either. Removed rather than left in as
+// dead code that looks like it's doing something.
 function todayISO(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 
 /* Piecewise fraction mapping — kept per HANDOFF ("keep the piecewise screenFrac/valForFrac
@@ -463,7 +467,7 @@ function wireDragFields(){
       const span = (cfg.max-cfg.min)/st.width;
       const raw = st.v0 + (e.clientX-st.x0)*span*st.gear;
       const snapped = Math.max(cfg.min, Math.min(cfg.max, Number((Math.round(raw/cfg.step)*cfg.step).toFixed(3))));
-      if(snapped !== cfg.get()){ cfg.set(snapped); patchDragField(key,cfg,st.gear); vibrate(4); }
+      if(snapped !== cfg.get()){ cfg.set(snapped); patchDragField(key,cfg,st.gear); }
       else { patchDragField(key,cfg,st.gear); }
     }, {passive:false});
     function finish(e){
@@ -514,7 +518,7 @@ function wireLongPress(){
       sx = e.clientX; sy = e.clientY;
       clear();
       timer = setTimeout(()=>{
-        timer = null; vibrate(18);
+        timer = null;
         const fn = el.getAttribute('data-longpress');
         try{ new Function(fn)(); }catch(err){}
       }, 550);
@@ -1396,7 +1400,7 @@ const A = {
   backToStep1(){ currentTop().params.step = 1; render(); },
   pickRecipeChip(recipeId){ const p=currentTop().params; const r=findRecipe(recipeId); if(!r) return;
     p.draft.recipeName = r.name; render(); },
-  setTaste(key,val){ const d=currentTop().params.draft; d[key]=val; vibrate(6); render(); },
+  setTaste(key,val){ const d=currentTop().params.draft; d[key]=val; render(); },
   bumpExtraction(delta){ const d=currentTop().params.draft; d.extractionBalance=Math.max(1,Math.min(10,d.extractionBalance+delta)); render(); },
   saveShotAction(){
     const p = currentTop().params; const d = p.draft; const grinder = activeGrinder();
@@ -1415,12 +1419,12 @@ const A = {
     }
     const t = (d.recipeName||'').trim();
     if(t && !DB.recipes.some(r=>r.name.toLowerCase()===t.toLowerCase())) DB.recipes.push({id:uid(),name:t,notes:'',createdAt:Date.now()});
-    save(); vibrate(15); popStack();
+    save(); popStack();
   },
   deleteShotConfirm(shotId){ confirmDialog('Delete this shot?','This cannot be undone.','Delete',true, ()=>{ DB.shots=DB.shots.filter(s=>s.id!==shotId); save(); popStack(); }); },
-  setDrinkStar(typeId,val){ const d=currentTop().params.draft; const cur=d.starsByType[typeId]||0; d.starsByType[typeId]=(cur===val)?0:val; vibrate(10); render(); },
+  setDrinkStar(typeId,val){ const d=currentTop().params.draft; const cur=d.starsByType[typeId]||0; d.starsByType[typeId]=(cur===val)?0:val; render(); },
   toggleFlavor(name){ const d=currentTop().params.draft; const idx=d.flavorTags.findIndex(f=>f.toLowerCase()===name.toLowerCase());
-    if(idx>=0) d.flavorTags.splice(idx,1); else d.flavorTags.push(name); vibrate(8); render(); },
+    if(idx>=0) d.flavorTags.splice(idx,1); else d.flavorTags.push(name); render(); },
   commitNewFlavor(){
     const d = currentTop().params.draft;
     const t = (d.newFlavorText||'').trim(); d.newFlavorText=''; d.addingFlavor=false;
