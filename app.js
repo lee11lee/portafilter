@@ -6,7 +6,7 @@
 /* Bump this string with every change that gets shipped, so the Setup screen always
    shows which build is actually running — the fastest way to tell whether an update
    to app.js actually reached this device (vs. still loading a cached/old copy). */
-const APP_VERSION = 'v11 · 2026-11-15';
+const APP_VERSION = 'v12 · 2026-11-15';
 
 /* ---------- Storage ---------- */
 const STORE_KEY = 'dialin_v1';
@@ -156,6 +156,16 @@ function findMachine(id){ return DB.machines.find(m=>m.id===id); }
 function findRecipe(id){ return DB.recipes.find(r=>r.id===id); }
 function activeGrinder(){ return DB.grinders.find(g=>g.isActive) || DB.grinders[0] || null; }
 function shotsForBean(beanId){ return DB.shots.filter(s=>s.beanId===beanId).sort((a,b)=>new Date(b.date)-new Date(a.date)); }
+/* Grams left in a bag: bag size minus every dose logged from it, plus a manual correction
+   (bean.gramsLeftAdjust) set via "Grams left" in Edit bag. Stored as an offset rather than a
+   fixed number, so shots logged after the correction still count down from it. Returns null
+   when the bag has no size. bagSize can be passed to preview an unsaved bag-size edit. */
+function gramsUsed(beanId){ return DB.shots.filter(s=>s.beanId===beanId).reduce((sum,s)=>sum+(s.doseGrams||0),0); }
+function gramsLeftFor(bean, bagSize){
+  const size = bagSize!==undefined ? bagSize : bean.bagSizeGrams;
+  if(!size) return null;
+  return Math.max(0, Math.round((size - gramsUsed(bean.id) + (bean.gramsLeftAdjust||0))*10)/10);
+}
 function activeBeans(){ return DB.beans.filter(b=>!b.isArchived).sort((a,b)=>b.createdAt-a.createdAt); }
 function archivedBeans(){ return DB.beans.filter(b=>b.isArchived).sort((a,b)=>b.createdAt-a.createdAt); }
 
@@ -838,6 +848,9 @@ const GRIND_RANGE_FALLBACK = {min:0,max:10,step:0.1};
 const DOSE_RANGE = {min:14,max:24,step:0.1};
 const YIELD_RANGE = {min:20,max:80,step:0.5};
 const TIME_RANGE = {min:5,max:60,step:1};
+// Starting point for a newly logged shot (editing an existing shot keeps its own values).
+const DEFAULT_DOSE = 20;    // grams
+const DEFAULT_RATIO = 3;    // yield = dose × ratio, i.e. 1:3 → 60 g
 
 function makeShotDraft(bean, existingShot){
   const grinder = activeGrinder();
@@ -856,7 +869,7 @@ function makeShotDraft(bean, existingShot){
   let gv = 5;
   if(last){ const p=parseFloat(last.grindSetting); if(!isNaN(p)) gv=p; }
   if(grinder) gv = Math.max(grinder.grindDialMin, Math.min(grinder.grindDialMax, gv));
-  return { dose:18, yieldG:36, time:20, grindValue:gv, grindText: last?last.grindSetting:'',
+  return { dose:DEFAULT_DOSE, yieldG:DEFAULT_DOSE*DEFAULT_RATIO, time:20, grindValue:gv, grindText: last?last.grindSetting:'',
     recipeName:'', notes:'', acidity:3, sweetness:3, bitterness:3, bodyIntensity:3, aftertaste:3, extractionBalance:5,
     flavorTags:[], starsByType:{}, addingFlavor:false, newFlavorText:'' };
 }
@@ -1069,8 +1082,7 @@ function BagDetailScreen(params){
   const shots = shotsForBean(bean.id);
   const best = bestShot(bean.id);
   const avg = avgBeanRating(bean.id);
-  const gramsUsed = shots.reduce((sum,s)=>sum+(s.doseGrams||0),0);
-  const gramsLeft = bean.bagSizeGrams ? Math.max(0, Math.round((bean.bagSizeGrams - gramsUsed)*10)/10) : null;
+  const gramsLeft = gramsLeftFor(bean);
   return `
     ${detailHeader(bean.name, escapeHtml(bean.roaster)+' · day '+days)}
     <div style="display:flex;gap:12px;margin-top:14px;align-items:flex-start;">
@@ -1148,7 +1160,8 @@ function FinishBeanModal(params){
 
 /* ===================== Modal: Add / Edit Bean (9L) ===================== */
 function emptyBeanDraft(){ return { name:'', roaster:'', origin:'', process:'', roastLevel:'', roastDate: todayISO(), notes:'', photoId:null, photoData:null, price:'', bagSizeGrams:250, addingProcess:false, newProcessText:'' }; }
-function beanDraftFrom(bean){ return { name:bean.name, roaster:bean.roaster, origin:bean.origin, process:bean.process, roastLevel:bean.roastLevel||'', roastDate:bean.roastDate, notes:bean.notes, photoId:bean.photoId||null, photoData:bean.photoData||null, price:bean.price||'', bagSizeGrams:bean.bagSizeGrams||250, addingProcess:false, newProcessText:'' }; }
+function beanDraftFrom(bean){ return { name:bean.name, roaster:bean.roaster, origin:bean.origin, process:bean.process, roastLevel:bean.roastLevel||'', roastDate:bean.roastDate, notes:bean.notes, photoId:bean.photoId||null, photoData:bean.photoData||null, price:bean.price||'', bagSizeGrams:bean.bagSizeGrams||250, addingProcess:false, newProcessText:'',
+  gramsLeft: gramsLeftFor(bean, bean.bagSizeGrams||250), gramsLeftTouched:false }; }
 function AddEditBeanModal(params){
   const d = params.draft;
   const isEdit = !!params.beanId;
@@ -1192,7 +1205,8 @@ function AddEditBeanModal(params){
       ${ROAST_LEVELS.map(r=>`<button class="chip ${d.roastLevel===r?'selected':''}" onclick="A.setDraftFlag('roastLevel','${r}')">${r}</button>`).join('')}
     </div>
     <div class="plate-grid-row" style="border:1px solid var(--hair);margin-top:10px;">
-      <div class="field-plate"><div class="fl">Bag size (g)</div><input type="number" inputmode="numeric" value="${d.bagSizeGrams}" placeholder="250" style="font-family:'Barlow Condensed',sans-serif;font-size:21px;font-weight:600;color:var(--ink);" oninput="A.setDraftField('bagSizeGrams',this.value===''?'':parseFloat(this.value)||0)"></div>
+      <div class="field-plate"><div class="fl">Bag size (g)</div><input type="number" inputmode="numeric" value="${d.bagSizeGrams}" placeholder="250" style="font-family:'Barlow Condensed',sans-serif;font-size:21px;font-weight:600;color:var(--ink);" oninput="A.setBagSizeDraft(this.value)"></div>
+      ${isEdit ? `<div class="field-plate"><div class="fl">Grams left</div><input id="grams-left-input" type="text" inputmode="decimal" value="${d.gramsLeft===null||d.gramsLeft===undefined?'':escapeHtml(String(d.gramsLeft))}" placeholder="—" style="font-family:'Barlow Condensed',sans-serif;font-size:21px;font-weight:600;color:var(--ink);" oninput="A.setGramsLeftDraft(this.value)"></div>` : ''}
     </div>
     <div class="dashed-field">
       <span class="dlabel">Price</span>
@@ -1489,6 +1503,19 @@ const A = {
   openBagDetail(beanId){ pushStack('bag-detail', {beanId}); },
   pickPhoto(){ requestPhoto(false, setDraftPhoto); },
   takePhoto(){ requestPhoto(true, setDraftPhoto); },
+  setBagSizeDraft(v){
+    const p = activeParams(); const d = p.draft;
+    d.bagSizeGrams = v==='' ? '' : (parseFloat(v)||0);
+    // Until "Grams left" is typed into, keep it following the bag size live (it's derived
+    // from it), so the sheet always shows what will be saved.
+    if(p.beanId && !d.gramsLeftTouched){
+      d.gramsLeft = gramsLeftFor(findBean(p.beanId), d.bagSizeGrams||0);
+      const el = document.getElementById('grams-left-input');
+      if(el) el.value = d.gramsLeft===null ? '' : String(d.gramsLeft);
+    }
+    revalidateAll();
+  },
+  setGramsLeftDraft(v){ const d = activeParams().draft; d.gramsLeft = v; d.gramsLeftTouched = true; },
   clearDraftPhoto(){ const p=activeParams(); p.draft.photoId=null; p.draft.photoData=null; render(); },
   pickPhotoForBean(beanId){ requestPhoto(false, durl=>setBeanPhoto(beanId, durl)); },
   takePhotoForBean(beanId){ requestPhoto(true, durl=>setBeanPhoto(beanId, durl)); },
@@ -1497,6 +1524,16 @@ const A = {
     if(!d.name.trim()) return;
     if(p.beanId){
       const b = findBean(p.beanId);
+      // A typed "Grams left" is saved as the offset from what bag size minus logged doses
+      // gives (see gramsLeftFor), so later shots keep counting down from the corrected value.
+      // Blank or invalid input leaves the existing correction untouched.
+      const size = d.bagSizeGrams||0;
+      let adjust = b.gramsLeftAdjust||0;
+      if(d.gramsLeftTouched && size>0){
+        const typed = parseFloat(String(d.gramsLeft).replace(',', '.'));
+        if(!isNaN(typed) && typed>=0) adjust = Math.round((typed - (size - gramsUsed(b.id)))*10)/10;
+      }
+      b.gramsLeftAdjust = adjust;
       Object.assign(b, {name:d.name.trim(), roaster:d.roaster.trim(), origin:d.origin.trim(), process:d.process.trim(),
         roastLevel:d.roastLevel||'', roastDate:d.roastDate, notes:d.notes, photoId:d.photoId||null, photoData:d.photoData||null, price:(d.price||'').trim(), bagSizeGrams:d.bagSizeGrams||0});
     } else {
