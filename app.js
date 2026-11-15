@@ -6,20 +6,148 @@
 /* Bump this string with every change that gets shipped, so the Setup screen always
    shows which build is actually running — the fastest way to tell whether an update
    to app.js actually reached this device (vs. still loading a cached/old copy). */
-const APP_VERSION = 'v9 · 2026-09-21';
+const APP_VERSION = 'v10 · 2026-11-15';
 
-/* ---------- Storage (unchanged) ---------- */
+/* ---------- Storage ---------- */
 const STORE_KEY = 'dialin_v1';
 function uid(){ return 'id_' + Date.now().toString(36) + Math.random().toString(36).slice(2,9); }
 function defaultDB(){ return { beans:[], shots:[], recipes:[], machines:[], grinders:[], customFlavorTags:[], customProcessTags:[] }; }
+// True only when a saved database was actually read back and parsed. The unused-photo
+// clean-up in initPhotos() refuses to run otherwise, so a failed read can never be
+// mistaken for "there are no bags, so every stored photo is unused".
+let DBLoadedOK = false;
 function loadDB(){
   try{ const raw = localStorage.getItem(STORE_KEY); if(!raw) return defaultDB();
     const d = JSON.parse(raw);
+    DBLoadedOK = true;
     return Object.assign(defaultDB(), d);
   }catch(e){ return defaultDB(); }
 }
 let DB = loadDB();
-function save(){ localStorage.setItem(STORE_KEY, JSON.stringify(DB)); }
+/* Returns false instead of throwing when the write fails. It used to throw — and since
+   nearly every caller saves *before* closing its sheet or re-rendering, a single
+   QuotaExceededError (Safari's ~5 MB localStorage cap, reached once enough bag photos were
+   stored inline in this record) left the open sheet frozen, and every later save threw
+   too. The only way out was killing the app, which also lost the unsaved change. */
+let SaveWarnedAt = 0;
+function save(){
+  try{ localStorage.setItem(STORE_KEY, JSON.stringify(DB)); return true; }
+  catch(err){
+    console.error('save() failed:', err);
+    if(Date.now() - SaveWarnedAt > 10000){
+      SaveWarnedAt = Date.now();
+      setTimeout(()=>alert("Couldn't save your last change: this device's storage for Portafilter is full.\n\nExport a backup in Setup so nothing gets lost."), 0);
+    }
+    return false;
+  }
+}
+
+/* ---------- Photo storage (IndexedDB) ----------
+   Bag photos used to live inline, as JPEG data URLs of roughly 150–400 KB each, inside the
+   single localStorage record above. Safari caps localStorage at about 5 MB per site, so
+   after a few dozen bags with photos every save failed. Photos now live in IndexedDB
+   (which Safari lets grow far larger), keyed by bean.photoId; the localStorage record only
+   keeps that id. bean.photoData is still read as a fallback (old data, or a device where
+   IndexedDB can't be opened), and backups keep the old format: export puts photoData back
+   inline, import moves it out again. */
+const PhotoStore = (()=>{
+  const NAME = 'portafilter-photos', STORE = 'photos';
+  let opening = null;
+  function open(){
+    if(!opening) opening = new Promise((resolve,reject)=>{
+      if(!window.indexedDB) return reject(new Error('IndexedDB not available'));
+      const req = indexedDB.open(NAME, 1);
+      req.onupgradeneeded = ()=>{ req.result.createObjectStore(STORE); };
+      req.onsuccess = ()=>{
+        const db = req.result;
+        // Let go if another tab/window needs to upgrade or delete this database, instead
+        // of leaving that request (and every open() queued behind it) hanging.
+        db.onversionchange = ()=>{ db.close(); opening = null; };
+        resolve(db);
+      };
+      req.onerror = ()=>reject(req.error);
+      req.onblocked = ()=>reject(new Error('IndexedDB open blocked'));
+    });
+    return opening;
+  }
+  // Resolves only once the transaction has committed, not when the request succeeds.
+  async function run(mode, fn){
+    const db = await open();
+    return new Promise((resolve,reject)=>{
+      const tx = db.transaction(STORE, mode);
+      let result;
+      fn(tx.objectStore(STORE), v=>{ result = v; });
+      tx.oncomplete = ()=>resolve(result);
+      tx.onerror = ()=>reject(tx.error);
+      tx.onabort = ()=>reject(tx.error || new Error('IndexedDB transaction aborted'));
+    });
+  }
+  return {
+    open,
+    putMany: entries => run('readwrite', s=>{ entries.forEach(([id,data])=>s.put(data,id)); }),
+    getMany: ids => run('readonly', (s,set)=>{ const m=new Map(); set(m); ids.forEach(id=>{ s.get(id).onsuccess = e=>{ m.set(id, e.target.result); }; }); }),
+    getAll: () => run('readonly', (s,set)=>{ const m=new Map(); set(m);
+      s.openCursor().onsuccess = e=>{ const c=e.target.result; if(c){ m.set(c.key, c.value); c.continue(); } }; }),
+    deleteMany: ids => run('readwrite', s=>{ ids.forEach(id=>s.delete(id)); }),
+    clear: () => run('readwrite', s=>{ s.clear(); }),
+  };
+})();
+const PhotoCache = new Map();   // photoId -> data URL, everything in PhotoStore, kept in memory for render()
+let PhotoStoreOK = false;
+
+function photoSrc(o){ return o ? ((o.photoId && PhotoCache.get(o.photoId)) || o.photoData || null) : null; }
+
+/* Stores a newly taken/picked photo; returns the fields to put on a bean or draft. */
+async function storePhoto(dataUrl){
+  if(PhotoStoreOK){
+    try{
+      const id = 'photo_' + uid();
+      await PhotoStore.putMany([[id, dataUrl]]);
+      PhotoCache.set(id, dataUrl);
+      return {photoId:id, photoData:null};
+    }catch(err){ console.error('Storing photo in IndexedDB failed, keeping it inline:', err); }
+  }
+  return {photoId:null, photoData:dataUrl};
+}
+
+/* Moves every inline bean.photoData into PhotoStore. Each photo is written, then read
+   back and compared, before its inline copy is dropped — so if anything fails part-way,
+   the affected bags simply keep their inline photo exactly as before. Returns how many
+   photos were moved; the caller saves DB afterwards. */
+async function moveInlinePhotosToStore(){
+  const beans = DB.beans.filter(b=>typeof b.photoData==='string' && b.photoData);
+  if(!beans.length) return 0;
+  const entries = beans.map(b=>['photo_'+uid(), b.photoData]);
+  await PhotoStore.putMany(entries);
+  const readBack = await PhotoStore.getMany(entries.map(e=>e[0]));
+  let moved = 0;
+  beans.forEach((b,i)=>{
+    const [id,data] = entries[i];
+    if(readBack.get(id) === data){ PhotoCache.set(id, data); b.photoId = id; b.photoData = null; moved++; }
+  });
+  return moved;
+}
+
+async function initPhotos(){
+  try{ await PhotoStore.open(); PhotoStoreOK = true; }
+  catch(err){ console.error('IndexedDB unavailable, photos stay inline:', err); return; }
+  // Ask the browser not to evict this site's storage under disk pressure (best effort;
+  // home-screen apps on iOS generally get this anyway).
+  try{ if(navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(()=>{}); }catch(e){}
+  try{
+    const stored = await PhotoStore.getAll();
+    stored.forEach((v,k)=>PhotoCache.set(k,v));
+    if(await moveInlinePhotosToStore()) save();
+    // Drop stored photos no bag points at any more (photo replaced, bag deleted, or picked
+    // in a sheet that was then cancelled). Only ids that existed before this launch are
+    // candidates, and only when the bag list was genuinely loaded.
+    if(DBLoadedOK && DB.beans.length){
+      const used = new Set(DB.beans.map(b=>b.photoId).filter(Boolean));
+      const unused = [...stored.keys()].filter(k=>!used.has(k));
+      if(unused.length){ await PhotoStore.deleteMany(unused); unused.forEach(k=>PhotoCache.delete(k)); }
+    }
+  }catch(err){ console.error('Photo setup failed:', err); }
+}
 
 function findBean(id){ return DB.beans.find(b=>b.id===id); }
 function findShot(id){ return DB.shots.find(s=>s.id===id); }
@@ -680,7 +808,7 @@ function BeanDialCard(bean){
   const metaLine = [bean.origin, bean.roastLevel, bean.process].filter(Boolean).join(' · ');
   return `<div class="bean-card" onclick="A.openLogShot('${bean.id}')">
     <div class="top">
-      ${photoThumb(bean.photoData, 46, 60)}
+      ${photoThumb(photoSrc(bean), 46, 60)}
       <div style="flex:1;min-width:0;">
         <div class="meta">${escapeHtml(metaLine||'')}</div>
         <div class="name">${escapeHtml(bean.name)}</div>
@@ -921,7 +1049,7 @@ function ShelfRow(bean, seg){
   const t2 = `${shots.length} shot${shots.length===1?'':'s'}`;
   const t3 = avg!==null ? `${avg.toFixed(1)} avg` : '';
   return `<button class="shelf-row" style="width:100%;" onclick="A.openBagDetail('${bean.id}')">
-    ${photoThumb(bean.photoData, 34, 44)}
+    ${photoThumb(photoSrc(bean), 34, 44)}
     <div style="flex:1;min-width:0;">
       <div class="name">${escapeHtml(bean.name)}</div>
       <div class="sub">${escapeHtml(bean.roaster)}${bean.origin?` · ${escapeHtml(bean.origin)}`:''}</div>
@@ -945,8 +1073,8 @@ function BagDetailScreen(params){
     ${detailHeader(bean.name, escapeHtml(bean.roaster)+' · day '+days)}
     <div style="display:flex;gap:12px;margin-top:14px;align-items:flex-start;">
       <div>
-        ${photoThumb(bean.photoData, 64, 84, `A.pickPhotoForBean('${bean.id}')`)}
-        <button class="bsc" style="color:var(--accent);font-size:9.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;margin-top:5px;display:block;width:64px;text-align:center;" onclick="A.takePhotoForBean('${bean.id}')">${bean.photoData?'Retake':'Camera'}</button>
+        ${photoThumb(photoSrc(bean), 64, 84, `A.pickPhotoForBean('${bean.id}')`)}
+        <button class="bsc" style="color:var(--accent);font-size:9.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;margin-top:5px;display:block;width:64px;text-align:center;" onclick="A.takePhotoForBean('${bean.id}')">${photoSrc(bean)?'Retake':'Camera'}</button>
       </div>
       <div style="flex:1;">
         <div class="bsc" style="font-weight:600;font-size:10.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-dim);">${[bean.origin,bean.roastLevel,bean.process].filter(Boolean).join(' · ')}</div>
@@ -1017,8 +1145,8 @@ function FinishBeanModal(params){
 }
 
 /* ===================== Modal: Add / Edit Bean (9L) ===================== */
-function emptyBeanDraft(){ return { name:'', roaster:'', origin:'', process:'', roastLevel:'', roastDate: todayISO(), notes:'', photoData:null, price:'', bagSizeGrams:250, addingProcess:false, newProcessText:'' }; }
-function beanDraftFrom(bean){ return { name:bean.name, roaster:bean.roaster, origin:bean.origin, process:bean.process, roastLevel:bean.roastLevel||'', roastDate:bean.roastDate, notes:bean.notes, photoData:bean.photoData, price:bean.price||'', bagSizeGrams:bean.bagSizeGrams||250, addingProcess:false, newProcessText:'' }; }
+function emptyBeanDraft(){ return { name:'', roaster:'', origin:'', process:'', roastLevel:'', roastDate: todayISO(), notes:'', photoId:null, photoData:null, price:'', bagSizeGrams:250, addingProcess:false, newProcessText:'' }; }
+function beanDraftFrom(bean){ return { name:bean.name, roaster:bean.roaster, origin:bean.origin, process:bean.process, roastLevel:bean.roastLevel||'', roastDate:bean.roastDate, notes:bean.notes, photoId:bean.photoId||null, photoData:bean.photoData||null, price:bean.price||'', bagSizeGrams:bean.bagSizeGrams||250, addingProcess:false, newProcessText:'' }; }
 function AddEditBeanModal(params){
   const d = params.draft;
   const isEdit = !!params.beanId;
@@ -1041,7 +1169,7 @@ function AddEditBeanModal(params){
       <div class="field-plate" style="flex:1;border:1px solid var(--hair);"><div class="fl">Roast date</div>
         <input type="date" value="${d.roastDate}" style="font-family:'Barlow Condensed',sans-serif;font-size:21px;font-weight:600;color:var(--accent);" oninput="A.setDraftField('roastDate',this.value)"></div>
       <div style="width:86px;flex:none;border:1px dashed var(--hair-strong);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;overflow:hidden;cursor:pointer;" onclick="A.pickPhoto()">
-        ${d.photoData?`<img src="${d.photoData}" style="width:100%;height:100%;object-fit:cover;">`:`<span class="bsc" style="font-size:10px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-faint);">Photo</span>`}
+        ${photoSrc(d)?`<img src="${photoSrc(d)}" style="width:100%;height:100%;object-fit:cover;">`:`<span class="bsc" style="font-size:10px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-faint);">Photo</span>`}
       </div>
     </div>
     <button class="bsc" style="color:var(--accent);font-size:12px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;margin-top:8px;display:block;" onclick="A.takePhoto()">Take photo of bag</button>
@@ -1357,21 +1485,21 @@ const A = {
   openAddBean(){ openModal('add-edit-bean', {beanId:null, draft: emptyBeanDraft()}); },
   openEditBean(beanId){ openModal('add-edit-bean', {beanId, draft: beanDraftFrom(findBean(beanId))}); },
   openBagDetail(beanId){ pushStack('bag-detail', {beanId}); },
-  pickPhoto(){ requestPhoto(false, durl=>{ const p=activeParams(); p.draft.photoData=durl; render(); }); },
-  takePhoto(){ requestPhoto(true, durl=>{ const p=activeParams(); p.draft.photoData=durl; render(); }); },
-  clearDraftPhoto(){ const p=activeParams(); p.draft.photoData=null; render(); },
-  pickPhotoForBean(beanId){ requestPhoto(false, durl=>{ const b=findBean(beanId); b.photoData=durl; save(); render(); }); },
-  takePhotoForBean(beanId){ requestPhoto(true, durl=>{ const b=findBean(beanId); b.photoData=durl; save(); render(); }); },
+  pickPhoto(){ requestPhoto(false, setDraftPhoto); },
+  takePhoto(){ requestPhoto(true, setDraftPhoto); },
+  clearDraftPhoto(){ const p=activeParams(); p.draft.photoId=null; p.draft.photoData=null; render(); },
+  pickPhotoForBean(beanId){ requestPhoto(false, durl=>setBeanPhoto(beanId, durl)); },
+  takePhotoForBean(beanId){ requestPhoto(true, durl=>setBeanPhoto(beanId, durl)); },
   saveBean(){
     const p = activeParams(); const d = p.draft;
     if(!d.name.trim()) return;
     if(p.beanId){
       const b = findBean(p.beanId);
       Object.assign(b, {name:d.name.trim(), roaster:d.roaster.trim(), origin:d.origin.trim(), process:d.process.trim(),
-        roastLevel:d.roastLevel||'', roastDate:d.roastDate, notes:d.notes, photoData:d.photoData, price:(d.price||'').trim(), bagSizeGrams:d.bagSizeGrams||0});
+        roastLevel:d.roastLevel||'', roastDate:d.roastDate, notes:d.notes, photoId:d.photoId||null, photoData:d.photoData||null, price:(d.price||'').trim(), bagSizeGrams:d.bagSizeGrams||0});
     } else {
       DB.beans.push({id:uid(), name:d.name.trim(), roaster:d.roaster.trim(), origin:d.origin.trim(), process:d.process.trim(),
-        roastLevel:d.roastLevel||'', roastDate:d.roastDate, notes:d.notes, isArchived:false, createdAt:Date.now(), photoData:d.photoData, price:(d.price||'').trim(), bagSizeGrams:d.bagSizeGrams||0});
+        roastLevel:d.roastLevel||'', roastDate:d.roastDate, notes:d.notes, isArchived:false, createdAt:Date.now(), photoId:d.photoId||null, photoData:d.photoData||null, price:(d.price||'').trim(), bagSizeGrams:d.bagSizeGrams||0});
     }
     save(); Nav.modal=null; render();
   },
@@ -1563,7 +1691,12 @@ const A = {
     save(); Nav.modal=null; render(); },
 
   exportBackup(){
-    const bundle = { exportedAt:new Date().toISOString(), beans:DB.beans, shots:DB.shots, recipes:DB.recipes,
+    // Same backup format as before: each bag's photo goes inline as photoData, so these
+    // files still import into older versions of the app (and older backups into this one).
+    const missing = DB.beans.filter(b=>b.photoId && !PhotoCache.has(b.photoId)).length;
+    if(missing && !confirm(`${missing} bag photo${missing===1?'':'s'} couldn't be loaded and won't be in this backup. Export anyway?`)) return;
+    const beans = DB.beans.map(b=>{ const c = Object.assign({}, b, {photoData: photoSrc(b)}); delete c.photoId; return c; });
+    const bundle = { exportedAt:new Date().toISOString(), beans, shots:DB.shots, recipes:DB.recipes,
       machines:DB.machines, grinders:DB.grinders, customFlavorTags: DB.customFlavorTags.map(t=>t.name) };
     const blob = new Blob([JSON.stringify(bundle,null,2)], {type:'application/json'});
     const url = URL.createObjectURL(blob);
@@ -1577,6 +1710,8 @@ const A = {
   startImport(){ const inp=document.getElementById('fileInputImport'); inp.value=''; inp.click(); },
   eraseAllConfirm(){ confirmDialog('Erase all data?','Every bag, shot and recipe on this device. Export a backup first if you want it back.','Erase',true, ()=>{
     DB = defaultDB(); save(); Nav = {tab:0, stacks:[[],[],[],[],[]], modal:null, confirm:null, toast:null}; render();
+    PhotoCache.clear();
+    if(PhotoStoreOK) PhotoStore.clear().catch(err=>console.error('Clearing photos failed:', err));
   }); },
   forceRefreshApp(){ confirmDialog('Force refresh?','Clears everything this app has cached about its own code (not your bags or shots) and reloads fresh from GitHub.','Refresh',false, async ()=>{
     try{
@@ -1603,10 +1738,24 @@ function requestPhoto(useCamera, callback){
   const inp = document.getElementById(useCamera?'fileInputCamera':'fileInputPhoto');
   inp.value=''; inp.click();
 }
+// Photo picked in the add/edit-bag sheet: stored right away, the sheet's draft only keeps
+// the id. If the sheet is then cancelled, initPhotos() removes the unused photo next launch.
+async function setDraftPhoto(durl){
+  const ref = await storePhoto(durl);
+  const p = activeParams();
+  if(p && p.draft){ p.draft.photoId = ref.photoId; p.draft.photoData = ref.photoData; }
+  render();
+}
+async function setBeanPhoto(beanId, durl){
+  const ref = await storePhoto(durl);
+  const b = findBean(beanId); if(!b) return;
+  b.photoId = ref.photoId; b.photoData = ref.photoData;
+  save(); render();
+}
 function initStaticInputs(){
   async function handlePhoto(e){
     const f = e.target.files[0]; if(!f) return;
-    try{ const durl = await fileToCompressedDataURL(f); if(PendingPhotoCallback) PendingPhotoCallback(durl); }
+    try{ const durl = await fileToCompressedDataURL(f); if(PendingPhotoCallback) await PendingPhotoCallback(durl); }
     catch(err){ console.error(err); }
   }
   document.getElementById('fileInputPhoto').addEventListener('change', handlePhoto);
@@ -1620,7 +1769,7 @@ function initStaticInputs(){
     }catch(err){ alert('Could not read backup file: '+err.message); }
   });
 }
-function performImport(bundle){
+async function performImport(bundle){
   try{
     const mapTags = arr => (arr||[]).map(n => typeof n==='string' ? {id:uid(),name:n,createdAt:Date.now()} : n);
     // Merged onto defaultDB() (same as loadDB() does on every normal page load) so any
@@ -1636,6 +1785,9 @@ function performImport(bundle){
       customFlavorTags: mapTags(bundle.customFlavorTags),
       customProcessTags: mapTags(bundle.customProcessTags)
     });
+    // Backups carry photos inline; move them into PhotoStore before saving, or a backup
+    // with many photos would overflow localStorage exactly like before.
+    if(PhotoStoreOK){ try{ await moveInlinePhotosToStore(); }catch(err){ console.error('Moving imported photos failed:', err); } }
     save();
     Nav = {tab:0, stacks:[[],[],[],[],[]], modal:null, confirm:null, toast:null};
     toast('Backup restored');
@@ -1644,8 +1796,15 @@ function performImport(bundle){
 }
 
 /* ---------- Init ---------- */
-function initApp(){
+async function initApp(){
   initStaticInputs();
+  // Photos are set up before the first render, so thumbnails don't pop in and old inline
+  // photos are moved out of localStorage before anything else tries to save. Safari has
+  // been known to leave indexedDB.open() hanging, so don't wait on it forever.
+  let rendered = false;
+  const photosReady = initPhotos().then(()=>{ if(rendered) render(); });
+  await Promise.race([photosReady, new Promise(r=>setTimeout(r, 4000))]);
+  rendered = true;
   render();
   if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js').catch(()=>{}); }
 }
