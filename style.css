@@ -240,9 +240,17 @@ input::placeholder,textarea::placeholder{color:var(--ink-faint);}
 .hist-row .l2{display:flex; align-items:baseline; gap:8px; margin-top:3px;}
 .hist-row .l2 span{white-space:nowrap; font-family:'Barlow Semi Condensed',sans-serif; font-size:10.5px; font-weight:600; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-dim);}
 .hist-row .l2 .when{margin-left:auto;}
-.hist-row .l3{display:flex; align-items:baseline; gap:10px; margin-top:3px; flex-wrap:wrap;}
+/* Fixed height, always rendered (even when empty), so every history row is exactly the same
+   height whether it has ratings, a bag name, both or neither. adjustHistoryPageSize() then
+   measures one true row height and can fill the screen without holding back a spare row. */
+.hist-row .l3{display:flex; align-items:baseline; gap:10px; margin-top:3px; height:14px; line-height:14px;}
 .hist-row .l3 span{white-space:nowrap; font-family:'Barlow Semi Condensed',sans-serif; font-size:11px; color:var(--ink-dim);}
+.hist-row .l3 .rate{flex:none;}
 .hist-row .l3 .glyph{color:var(--accent); letter-spacing:.06em;}
+/* Bag name: right-aligned under the recipe/date, same lettering as that line; long names are
+   cut with "…" rather than pushing the ratings around or wrapping onto a second line. */
+.hist-row .l3 .bean{flex:1 1 0; min-width:0; overflow:hidden; text-overflow:ellipsis; text-align:right;
+  font-size:10.5px; font-weight:600; letter-spacing:.14em; text-transform:uppercase;}
 
 /* Best-of box */
 .best-box{border:1px solid var(--accent); padding:12px; margin-top:16px;}
