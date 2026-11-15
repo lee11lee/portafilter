@@ -6,7 +6,7 @@
 /* Bump this string with every change that gets shipped, so the Setup screen always
    shows which build is actually running — the fastest way to tell whether an update
    to app.js actually reached this device (vs. still loading a cached/old copy). */
-const APP_VERSION = 'v13 · 2026-11-15';
+const APP_VERSION = 'v14 · 2026-11-15';
 
 /* ---------- Storage ---------- */
 const STORE_KEY = 'dialin_v1';
@@ -837,7 +837,7 @@ function BeanDialCard(bean){
 }
 function photoThumb(photoData, w, h, onClick){
   const clickable = !!onClick;
-  return `<div class="beanphoto" style="width:${w}px;height:${h}px;${clickable?'cursor:pointer;':''}" ${clickable?`onclick="${onClick}"`:''}>${
+  return `<div class="beanphoto${photoData?' has-photo':''}" style="width:${w}px;height:${h}px;${clickable?'cursor:pointer;':''}" ${clickable?`onclick="${onClick}"`:''}>${
     photoData ? `<img src="${photoData}">`
     : (clickable ? `<span class="bsc" style="font-size:9.5px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-faint);padding:2px;">+ Photo</span>` : '')
   }</div>`;
@@ -1186,7 +1186,7 @@ function AddEditBeanModal(params){
     <div style="display:flex;gap:10px;margin-top:10px;">
       <div class="field-plate" style="flex:1;border:1px solid var(--hair);"><div class="fl">Roast date</div>
         <input type="date" value="${d.roastDate}" style="font-family:'Barlow Condensed',sans-serif;font-size:21px;font-weight:600;color:var(--accent);" oninput="A.setDraftField('roastDate',this.value)"></div>
-      <div style="width:86px;flex:none;border:1px dashed var(--hair-strong);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;overflow:hidden;cursor:pointer;" onclick="A.pickPhoto()">
+      <div style="width:86px;flex:none;border:${photoSrc(d)?'none':'1px dashed var(--hair-strong)'};display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;overflow:hidden;cursor:pointer;" onclick="A.pickPhoto()">
         ${photoSrc(d)?`<img src="${photoSrc(d)}" style="width:100%;height:100%;object-fit:cover;">`:`<span class="bsc" style="font-size:10px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-faint);">Photo</span>`}
       </div>
     </div>
