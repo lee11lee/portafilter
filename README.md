@@ -42,6 +42,10 @@ their web dashboard (no build step needed, it's static files).
   grinder/machine setup — is a full functional port.
 
 ## Your data
-Stored in this browser's `localStorage`, scoped to whichever URL you open it from.
+Stored in this browser, scoped to whichever URL you open it from: bags, shots, recipes and
+gear in `localStorage`, bag photos in IndexedDB. (Photos used to sit in `localStorage` too,
+but Safari caps that at ~5 MB, which a few dozen bag photos fill up; once full, every save
+failed and the app froze. Since v10, old inline photos are moved to IndexedDB
+automatically on first launch.)
 Use Settings → Export backup regularly, especially before clearing browser data or
 switching hosting providers (localStorage doesn't follow you between different URLs).
