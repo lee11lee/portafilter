@@ -6,7 +6,7 @@
 /* Bump this string with every change that gets shipped, so the Setup screen always
    shows which build is actually running — the fastest way to tell whether an update
    to app.js actually reached this device (vs. still loading a cached/old copy). */
-const APP_VERSION = 'v12 · 2026-11-15';
+const APP_VERSION = 'v13 · 2026-11-15';
 
 /* ---------- Storage ---------- */
 const STORE_KEY = 'dialin_v1';
@@ -1023,10 +1023,12 @@ function HistoryShotRow(shot, showBean){
     if(!r) return null;
     return `<span class="rate">${t.short} <span class="glyph">${'◆'.repeat(r.stars)}${'◇'.repeat(5-r.stars)}</span></span>`;
   }).filter(Boolean);
-  // The bag's name sits right-aligned under the recipe/date. Left out in a single bag's own
-  // history, where that name is already the screen title.
+  // The bag's photo (left) and name (right-aligned under the recipe/date). Both are left out
+  // in a single bag's own history, where every row would repeat the bag in the screen title.
   const bean = showBean ? findBean(shot.beanId) : null;
-  return `<button class="hist-row" onclick="A.openShotFromHistory('${shot.beanId}','${shot.id}')">
+  return `<button class="hist-row${showBean ? ' with-photo' : ''}" onclick="A.openShotFromHistory('${shot.beanId}','${shot.id}')">
+    ${showBean ? photoThumb(photoSrc(bean), 34, 44) : ''}
+    <div class="hist-body">
     <div class="l1">
       <span class="num">${fmtNum(shot.doseGrams,1)} → ${fmtNum(shot.yieldGrams,1)}</span>
       <span class="ratio">${ratioLabel(shot)}</span>
@@ -1037,6 +1039,7 @@ function HistoryShotRow(shot, showBean){
       <span class="when">${escapeHtml(shot.recipeName||'')} ${timestampLabel(shot.date)}</span>
     </div>
     <div class="l3">${pips.join('')}${bean ? `<span class="bean">${escapeHtml(bean.name)}</span>` : ''}</div>
+    </div>
   </button>`;
 }
 
