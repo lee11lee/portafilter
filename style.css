@@ -232,6 +232,10 @@ input::placeholder,textarea::placeholder{color:var(--ink-faint);}
 
 /* History rows */
 .hist-row{padding:10px 0 9px; border-bottom:1px solid var(--hair); width:100%; text-align:left; background:none; display:block;}
+/* All-shots History: bag photo on the left. The 44px thumb is shorter than the three text
+   lines, so rows keep their height (and the shots-per-page count stays the same). */
+.hist-row.with-photo{display:flex; align-items:center; gap:10px;}
+.hist-row .hist-body{flex:1; min-width:0;}
 .hist-row .l1{display:flex; align-items:baseline; gap:7px;}
 .hist-row .num{font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:19px; color:var(--ink);}
 .hist-row .arrow{color:var(--ink-dim); font-size:15px;}
