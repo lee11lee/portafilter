@@ -15,13 +15,16 @@ html,body{margin:0;padding:0;background:var(--ground);color:var(--ink);
   font-family:'Barlow',sans-serif; overscroll-behavior-y:none; height:100%;}
 body{-webkit-user-select:none;user-select:none;}
 input,textarea{-webkit-user-select:text;user-select:text;}
-#app{min-height:100vh; display:flex; flex-direction:column;}
+/* overflow-x:clip (not hidden): anything that ever pokes out sideways is cut off instead of
+   widening the page, without turning #app into a scroll container, so vertical scrolling
+   (and Safari's collapsing toolbar) keeps working exactly as before. */
+#app{min-height:100vh; display:flex; flex-direction:column; overflow-x:clip;}
 /* min-height:0 overrides the flexbox default of a flex item never shrinking below its
    own content's natural size. Without it, a screen with a lot of content (like History,
    which is deliberately capped to one screen with no internal scrollbar) would instead
    just grow #app taller than the actual device viewport — pushing the tab bar and any
    bottom controls below the visible screen instead of clipping the overflow in place. */
-.screen{flex:1; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch; padding:calc(16px + env(safe-area-inset-top)) 16px 0; display:flex; flex-direction:column;}
+.screen{flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:touch; padding:calc(16px + env(safe-area-inset-top)) 16px 0; display:flex; flex-direction:column;}
 .screen.no-scroll{overflow:hidden;}
 .screen-body{flex:1 1 auto;}
 .uc{text-transform:uppercase;}
@@ -135,7 +138,10 @@ input::placeholder,textarea::placeholder{color:var(--ink-faint);}
 .btn-ghost[disabled]{color:var(--ink-faint); pointer-events:none;}
 
 /* Tab bar */
-.tab-bar{flex:none; margin:auto -16px 0; border-top:1px solid var(--hair); background:var(--ground);
+/* No negative side margins: the tab bar sits directly in #app (which has no padding), not
+   inside the padded .screen. The old -16px on each side made it 32px wider than the screen,
+   so on every tab the whole page could be dragged 16px sideways and stayed there. */
+.tab-bar{flex:none; margin:auto 0 0; border-top:1px solid var(--hair); background:var(--ground);
   padding-bottom:env(safe-area-inset-bottom);}
 .tab-row{display:flex;}
 .tab-btn{flex:1; text-align:center; padding:11px 0 16px; font-family:'Barlow Semi Condensed',sans-serif;
