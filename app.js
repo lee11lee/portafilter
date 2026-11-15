@@ -6,7 +6,7 @@
 /* Bump this string with every change that gets shipped, so the Setup screen always
    shows which build is actually running — the fastest way to tell whether an update
    to app.js actually reached this device (vs. still loading a cached/old copy). */
-const APP_VERSION = 'v10 · 2026-11-15';
+const APP_VERSION = 'v11 · 2026-11-15';
 
 /* ---------- Storage ---------- */
 const STORE_KEY = 'dialin_v1';
@@ -694,13 +694,12 @@ function adjustHistoryPageSize(){
   let rowH = 0;
   rows.forEach(r => { rowH = Math.max(rowH, r.getBoundingClientRect().height); });
   if(!rowH) return;
-  // Beyond the pixel buffer above, also always hold back one full row of headroom. The
-  // measurement is fundamentally a snapshot of a moment (device font metrics, Dynamic
-  // Type size, rounding) that can drift slightly on a real phone in ways this can't
-  // simulate — one spare row's worth of slack is a cheap, robust guarantee that the page
-  // never runs long, at the cost of the list ending one entry sooner than the theoretical
-  // max.
-  const fit = Math.max(1, Math.floor((viewport.clientHeight - HISTORY_FIT_SAFETY_PX) / rowH) - 1);
+  // This used to hold back one full row of headroom on top of the pixel buffer, because rows
+  // with and without ratings had different heights, so a page measured on short rows could
+  // overflow on the next page's taller ones. Every row now has the same fixed height (the
+  // third line is always rendered at a fixed height, see .hist-row .l3 in style.css), so the
+  // measurement is exact and the spare row just left a row-sized gap at the bottom.
+  const fit = Math.max(1, Math.floor((viewport.clientHeight - HISTORY_FIT_SAFETY_PX) / rowH));
   if(fit !== UIState.historyPageSize){
     UIState.historyPageSize = fit;
     render();
@@ -1005,12 +1004,15 @@ function DrinkRatingRow(type, draft){
     <div class="pip-row">${pips}</div>
   </div>`;
 }
-function HistoryShotRow(shot){
+function HistoryShotRow(shot, showBean){
   const pips = DRINK_TYPES.map(t=>{
     const r = shot.ratings.find(x=>x.drinkType===t.id && x.stars>0);
     if(!r) return null;
-    return `<span>${t.short} <span class="glyph">${'◆'.repeat(r.stars)}${'◇'.repeat(5-r.stars)}</span></span>`;
+    return `<span class="rate">${t.short} <span class="glyph">${'◆'.repeat(r.stars)}${'◇'.repeat(5-r.stars)}</span></span>`;
   }).filter(Boolean);
+  // The bag's name sits right-aligned under the recipe/date. Left out in a single bag's own
+  // history, where that name is already the screen title.
+  const bean = showBean ? findBean(shot.beanId) : null;
   return `<button class="hist-row" onclick="A.openShotFromHistory('${shot.beanId}','${shot.id}')">
     <div class="l1">
       <span class="num">${fmtNum(shot.doseGrams,1)} → ${fmtNum(shot.yieldGrams,1)}</span>
@@ -1021,7 +1023,7 @@ function HistoryShotRow(shot){
       <span>Grind ${escapeHtml(shot.grindSetting)} · ${shot.timeSeconds}s</span>
       <span class="when">${escapeHtml(shot.recipeName||'')} ${timestampLabel(shot.date)}</span>
     </div>
-    ${pips.length ? `<div class="l3">${pips.join('')}</div>` : ''}
+    <div class="l3">${pips.join('')}${bean ? `<span class="bean">${escapeHtml(bean.name)}</span>` : ''}</div>
   </button>`;
 }
 
@@ -1246,7 +1248,7 @@ function ShotHistoryScreen(params){
       </div>
     </div>
     <div class="history-list-viewport" id="history-list-viewport" style="margin-top:14px;border-top:1px solid var(--hair);">
-      ${shots.length===0 ? `<div class="empty-msg">No shots match. Pull one from the Dial tab.</div>` : pageShots.map(s=>HistoryShotRow(s)).join('')}
+      ${shots.length===0 ? `<div class="empty-msg">No shots match. Pull one from the Dial tab.</div>` : pageShots.map(s=>HistoryShotRow(s, !bean)).join('')}
     </div>
     ${totalPages>1 ? `<div class="pager-bottom">
       <button class="btn-ghost pager-nav" ${page<=1?'disabled':''} onclick="A.setHistoryPage(${page-1})">‹ Previous</button>
