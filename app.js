@@ -6,7 +6,7 @@
 /* Bump this string with every change that gets shipped, so the Setup screen always
    shows which build is actually running — the fastest way to tell whether an update
    to app.js actually reached this device (vs. still loading a cached/old copy). */
-const APP_VERSION = 'v15 · 2026-11-15';
+const APP_VERSION = 'v16 · 2026-11-15';
 
 /* ---------- Storage ---------- */
 const STORE_KEY = 'dialin_v1';
@@ -1891,9 +1891,66 @@ async function performImport(bundle){
   }catch(err){ alert('Could not restore backup: '+err.message); }
 }
 
+/* ---------- Swipe back from the left edge ----------
+   iOS-style back gesture on every screen that has a back button (.link-back in its header):
+   start a drag at the left screen edge and the screen follows the finger; let go past about
+   a third of the width, or with a quick flick, and it slides off and that back button is
+   clicked, so the gesture always does exactly what tapping back does (log shot step 2 → step
+   1, a pushed screen → the one before). A short or slow drag springs back. Home-screen web
+   apps don't get the system swipe-back, since the app's screens aren't browser history. */
+const SWIPE_EDGE_PX = 20;
+function initSwipeBack(){
+  let s = null;
+  document.addEventListener('touchstart', e=>{
+    s = null;
+    if(e.touches.length!==1 || Nav.modal || Nav.confirm) return;
+    const t = e.touches[0];
+    if(t.clientX > SWIPE_EDGE_PX) return;
+    // Starting on a grind/dose/yield/time control drags that control instead.
+    if(e.target && e.target.closest && e.target.closest('[id^="drag-"]')) return;
+    const screen = document.querySelector('#app > .screen');
+    const back = screen && screen.querySelector('.link-back');
+    if(!back) return;
+    s = {x0:t.clientX, y0:t.clientY, t0:Date.now(), dx:0, screen, back, active:false};
+  }, {passive:true});
+  document.addEventListener('touchmove', e=>{
+    if(!s) return;
+    const t = e.touches[0];
+    const dx = t.clientX - s.x0, dy = t.clientY - s.y0;
+    if(!s.active){
+      if(Math.abs(dy) > 10 && Math.abs(dy) > dx){ s = null; return; }   // vertical scroll, not a swipe
+      if(dx < 8) return;
+      s.active = true;
+      s.screen.style.transition = 'none';
+      s.screen.style.willChange = 'transform';
+    }
+    e.preventDefault();   // keep the page from scrolling while it's being dragged sideways
+    s.dx = Math.max(0, dx);
+    s.screen.style.transform = 'translateX(' + s.dx + 'px)';
+  }, {passive:false});
+  const end = ()=>{
+    const st = s; s = null;
+    if(!st || !st.active) return;
+    const w = window.innerWidth;
+    const speed = st.dx / Math.max(1, Date.now() - st.t0);   // px per ms
+    const goBack = st.dx > w*0.33 || (speed > 0.5 && st.dx > 40);
+    st.screen.style.transition = 'transform .2s ease-out';
+    st.screen.style.transform = 'translateX(' + (goBack ? w : 0) + 'px)';
+    setTimeout(()=>{
+      if(goBack) st.back.click();
+      // The back action re-renders a fresh screen; if this one is somehow still on the page
+      // (or the swipe was cancelled), put it back where it belongs.
+      if(st.screen.isConnected){ st.screen.style.transition = ''; st.screen.style.transform = ''; st.screen.style.willChange = ''; }
+    }, 200);
+  };
+  document.addEventListener('touchend', end);
+  document.addEventListener('touchcancel', end);
+}
+
 /* ---------- Init ---------- */
 async function initApp(){
   initStaticInputs();
+  initSwipeBack();
   // Photos are set up before the first render, so thumbnails don't pop in and old inline
   // photos are moved out of localStorage before anything else tries to save. Safari has
   // been known to leave indexedDB.open() hanging, so don't wait on it forever.
