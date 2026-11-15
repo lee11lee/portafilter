@@ -6,7 +6,7 @@
 /* Bump this string with every change that gets shipped, so the Setup screen always
    shows which build is actually running — the fastest way to tell whether an update
    to app.js actually reached this device (vs. still loading a cached/old copy). */
-const APP_VERSION = 'v14 · 2026-11-15';
+const APP_VERSION = 'v15 · 2026-11-15';
 
 /* ---------- Storage ---------- */
 const STORE_KEY = 'dialin_v1';
@@ -293,7 +293,8 @@ let Registry = { validators:{}, dragFields:{} };
 /* Ephemeral view-state that isn't part of the data model (sort/filter/segment
    selection). Base tab-level screens get fresh params on every render, so this
    lives outside Nav/params instead. */
-let UIState = { shelfSeg:'Active', historySort:'Recent', historyFilter:'All', historyPage:1, historyPageSize:8 };
+let UIState = { shelfSeg:'Active', historySort:'Recent', historyFilter:'All', historyPage:1, historyPageSize:8,
+  recipePage:1, recipePageBreaks:[0] };
 
 /* Buttons whose enabled state depends on live text-field values register a check here. */
 function regValidate(btnId, checkFn){ Registry.validators[btnId] = checkFn; }
@@ -355,7 +356,7 @@ function renderInner(){
   } else {
     const top = currentTop();
     const isBase = Nav.stacks[Nav.tab].length===0;
-    const noScroll = top.screen==='shot-history';
+    const noScroll = top.screen==='shot-history' || top.screen==='recipes-list';
     html = `<div class="screen${noScroll?' no-scroll':''}">${renderScreen(top.screen, top.params)}</div>` + (isBase ? TabBar() : '');
   }
   app.innerHTML = html;
@@ -725,11 +726,46 @@ function adjustHistoryPageSize(){
     document.fonts.ready.then(()=>{ adjustHistoryPageSize(); });
   }
 }
+/* Recipes list paging. Same goal as History (the list fills exactly one screen and never
+   scrolls, so the tab bar stays put; Previous/Next move between screens), but recipe cards
+   aren't all the same height (notes can wrap over several lines). So instead of one row
+   height × N, every card is measured in an off-screen copy of the list at the real width,
+   and pages are cut wherever the next card would no longer fit. The resulting page starts
+   are kept in UIState.recipePageBreaks; a re-render only happens when they change, and
+   they only change when the content or the space for it does, so this settles. */
+let recipeFontsHooked = false;
+function adjustRecipePages(){
+  const viewport = document.getElementById('recipe-list-viewport');
+  if(!viewport) return;
+  const recipes = sortedRecipes();
+  if(!recipes.length) return;
+  const probe = document.createElement('div');
+  probe.style.cssText = 'position:absolute;left:-10000px;top:0;visibility:hidden;width:' + viewport.clientWidth + 'px;';
+  probe.innerHTML = recipes.map(RecipeRow).join('');
+  document.body.appendChild(probe);
+  const heights = [...probe.children].map(el => el.getBoundingClientRect().height + (parseFloat(getComputedStyle(el).marginBottom)||0));
+  probe.remove();
+  const avail = viewport.clientHeight - HISTORY_FIT_SAFETY_PX;
+  const breaks = [0];
+  let used = 0;
+  heights.forEach((h,i)=>{ if(used>0 && used+h>avail){ breaks.push(i); used = 0; } used += h; });
+  if(breaks.join(',') !== UIState.recipePageBreaks.join(',')){
+    UIState.recipePageBreaks = breaks;
+    render();
+  }
+  if(!recipeFontsHooked && document.fonts && document.fonts.ready){
+    // One re-measure once the webfont has loaded, same reason and same one-shot pattern
+    // as History above.
+    recipeFontsHooked = true;
+    document.fonts.ready.then(()=>{ adjustRecipePages(); });
+  }
+}
 function wireAll(){
   wireDragFields();
   wireLongPress();
   document.querySelectorAll('textarea[data-autosize]').forEach(t=>{ t.style.height='auto'; t.style.height=t.scrollHeight+'px'; });
   adjustHistoryPageSize();
+  adjustRecipePages();
 }
 
 /* ===================== Screens: Onboarding ===================== */
@@ -1276,20 +1312,36 @@ function ShotHistoryScreen(params){
 }
 
 /* ===================== Screen: Recipes (9F / 9G / 9M) ===================== */
-function RecipesListScreen(){
-  const recipes = [...DB.recipes].sort((a,b)=>b.createdAt-a.createdAt);
-  const machine = DB.machines[0];
-  return `${screenHeader('Recipes', machine?machine.name:'')}
-    <div style="margin-top:14px;">
-      ${recipes.map(r=>`<button style="display:block;width:100%;text-align:left;padding:11px;border:1px solid var(--hair);margin-bottom:9px;background:none;" onclick="A.openEditRecipe('${r.id}')">
+function sortedRecipes(){ return [...DB.recipes].sort((a,b)=>b.createdAt-a.createdAt); }
+function RecipeRow(r){
+  return `<button style="display:block;width:100%;text-align:left;padding:11px;border:1px solid var(--hair);margin-bottom:9px;background:none;flex:none;" onclick="A.openEditRecipe('${r.id}')">
           <div style="display:flex;align-items:baseline;gap:8px;">
             <span class="bc" style="font-size:21px;font-weight:600;text-transform:uppercase;line-height:1;">${escapeHtml(r.name)}</span>
           </div>
           ${r.notes?`<div style="margin-top:7px;font-size:13px;color:var(--ink-dim);">${escapeHtml(r.notes)}</div>`:''}
-        </button>`).join('')}
+        </button>`;
+}
+function RecipesListScreen(){
+  const recipes = sortedRecipes();
+  const machine = DB.machines[0];
+  // Page starts come from adjustRecipePages(), measured against this device's screen.
+  let breaks = UIState.recipePageBreaks.filter(i=>i>0 && i<recipes.length);
+  breaks = [0, ...breaks];
+  const totalPages = breaks.length;
+  if(UIState.recipePage > totalPages) UIState.recipePage = totalPages;
+  if(UIState.recipePage < 1) UIState.recipePage = 1;
+  const page = UIState.recipePage;
+  const pageRecipes = recipes.slice(breaks[page-1], page<totalPages ? breaks[page] : recipes.length);
+  return `${screenHeader('Recipes', machine?machine.name:'')}
+    <div class="history-list-viewport" id="recipe-list-viewport" style="margin-top:14px;">
+      ${recipes.length ? pageRecipes.map(RecipeRow).join('') : '<div class="empty-msg">No saved recipes yet.</div>'}
     </div>
-    <button class="btn-ghost" onclick="A.openAddRecipe()">+ New recipe</button>
-    ${recipes.length===0?'<div class="empty-msg">No saved recipes yet.</div>':''}
+    <button class="btn-ghost" style="flex:none;" onclick="A.openAddRecipe()">+ New recipe</button>
+    ${totalPages>1 ? `<div class="pager-bottom">
+      <button class="btn-ghost pager-nav" ${page<=1?'disabled':''} onclick="A.setRecipePage(${page-1})">‹ Previous</button>
+      <span class="pager-count">${page} / ${totalPages}</span>
+      <button class="btn-ghost pager-nav" ${page>=totalPages?'disabled':''} onclick="A.setRecipePage(${page+1})">Next ›</button>
+    </div>` : ''}
   `;
 }
 function EditRecipeScreen(params){
@@ -1670,6 +1722,7 @@ const A = {
   setHistorySort(s){ UIState.historySort = s; UIState.historyPage = 1; render(); },
   setHistoryFilter(f){ UIState.historyFilter = f; UIState.historyPage = 1; render(); },
   setHistoryPage(p){ UIState.historyPage = p; render(); },
+  setRecipePage(p){ UIState.recipePage = p; render(); },
 
   openEditRecipe(recipeId){ pushStack('edit-recipe', {recipeId}); },
   openAddRecipe(){ openModal('add-recipe', {draft:{name:'',notes:'',pressure:9,temperature:93,preInfusion:6,basket:18}}); },
@@ -1687,6 +1740,7 @@ const A = {
     const recipe = {id:uid(),name:d.name.trim(),notes:d.notes,createdAt:Date.now(),
       pressure:d.pressure!=null?d.pressure:9, temperature:d.temperature!=null?d.temperature:93, preInfusion:d.preInfusion!=null?d.preInfusion:6, basket:d.basket!=null?d.basket:18};
     DB.recipes.push(recipe);
+    UIState.recipePage = 1;   // newest first, so the new recipe is at the top of page 1
     if(p.forMachineId){ const m=findMachine(p.forMachineId); if(m){ if(!m.recipeIds) m.recipeIds=[]; m.recipeIds.push(recipe.id); } }
     save(); Nav.modal=null; render(); },
 
